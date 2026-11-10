@@ -116,6 +116,7 @@ local IsolatedBlock  = events:FindFirstChild("isolatedblock")
 local PvpToggle      = events:FindFirstChild("PvpToggle")
 local SneakEvents    = events:FindFirstChild("SneakRequestEvents")
 local SendSneak      = SneakEvents and SneakEvents:FindFirstChild("SendSneakToServer")
+local customweldacc  = NonFightEvents and NonFightEvents:FindFirstChild("customweldacc")
 
 local looseFightBlocked  = false
 local beatDownBlocked    = false
@@ -132,6 +133,7 @@ local lastHitboxApply    = 0
 local torsoCache         = {}
 local activeRenderCount  = 0
 local activeHBCount      = 0
+local brassThread        = nil
 
 local SILVER=Color3.fromRGB(185,190,200)
 local DARK=Color3.fromRGB(25,26,31)
@@ -459,40 +461,24 @@ local function stompDeactivate()
 	end
 end
 
-local brassActive=false
-local brassConnection=nil
-
-local function equipBrass()
-	local char=player.Character
-	local hum=char and char:FindFirstChildOfClass("Humanoid")
-	local backpack=player:FindFirstChildOfClass("Backpack")
-	if not hum or not backpack then return end
-
-	for _,tool in ipairs(backpack:GetChildren()) do
-		if tool:IsA("Tool") and tool.Name:lower():find("brass") then
-			hum:EquipTool(tool)
-			return
-		end
-	end
-end
-
 local function brassActivate()
-	if brassActive then return end
-	brassActive=true
-	equipBrass()
-	brassConnection=player.CharacterAdded:Connect(function()
-		task.wait(1)
-		if brassActive then equipBrass() end
+	if not customweldacc then return end
+	brassThread=task.spawn(function()
+		while true do pcall(function() customweldacc:FireServer("Rings") end); task.wait(jitter(0.05,0.1)) end
 	end)
 end
+local function brassDeactivate() if brassThread then task.cancel(brassThread); brassThread=nil end end
 
-local function brassDeactivate()
-	brassActive=false
-	if brassConnection then
-		brassConnection:Disconnect()
-		brassConnection=nil
-	end
+local function blockActivate()
+	blockThread=task.spawn(function()
+		while true do
+			pcall(function() if IsolatedBlock then IsolatedBlock:FireServer() end end)
+			pcall(function() end)
+			task.wait(2.5)
+		end
+	end)
 end
+local function blockDeactivate() if blockThread then task.cancel(blockThread); blockThread=nil end end
 
 local function healActivate()
 	healing = true
@@ -503,7 +489,7 @@ local function healActivate()
 			pcall(function()
 				Solo:FireServer("Health")
 			end)
-			task.wait(1)
+			task.wait(3)
 		end
 		healThread = nil
 	end)
@@ -643,6 +629,8 @@ local fBrass=makeFeature("Brass Knuckles",Enum.KeyCode.Unknown,{
 	onActivate=brassActivate,
 	onDeactivate=brassDeactivate
 })
+
+local fBlock  = makeFeature("Auto Block",       Enum.KeyCode.Unknown,     {onActivate=blockActivate,         onDeactivate=blockDeactivate})
 
 local fLoose=makeFeature("Block LooseFight",Enum.KeyCode.Unknown,{
 	onActivate=toggleLooseFight,onDeactivate=toggleLooseFight
