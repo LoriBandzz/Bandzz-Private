@@ -244,6 +244,15 @@ local function keyDisplayName(key)
 	local n=key.Name; return #n==1 and "["..n.."]" or "["..n:sub(1,3).."]"
 end
 
+local healing = false
+local healThread = nil
+
+local godThread = nil
+local godHealthConn = nil
+local godRenderConn = nil
+local godOriginalMax = nil
+local godEnabled = false
+
 local features={}
 local function makeFeature(name,key,opts)
 	local act=opts.onActivate or function()end
@@ -485,60 +494,129 @@ local function brassDeactivate()
 	end
 end
 
-local HEALTH_BONUS = 15
-local healthActive = false
-local healthConnection = nil
-local originalHealth = nil
+local function healActivate()
+	healing = true
+	if healThread then return end
 
-local function applyHealth()
-	local char = player.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not hum then return end
-
-	if not originalHealth then
-		originalHealth = hum.MaxHealth
-	end
-
-	hum.MaxHealth = originalHealth + HEALTH_BONUS
-	hum.Health = math.min(hum.Health + HEALTH_BONUS, hum.MaxHealth)
+	healThread = task.spawn(function()
+		while healing do
+			pcall(function()
+				Solo:FireServer("Health")
+			end)
+			task.wait(1)
+		end
+		healThread = nil
+	end)
 end
 
-local function healthActivate()
-	if healthActive then return end
-	healthActive = true
-	applyHealth()
+local function healDeactivate()
+	healing = false
+	if healThread then
+		task.cancel(healThread)
+		healThread = nil
+	end
+end
 
-	healthConnection = player.CharacterAdded:Connect(function(char)
-		originalHealth = nil
-		local hum = char:WaitForChild("Humanoid", 5)
-		if hum and healthActive then
-			applyHealth()
+local function clearGodConnections()
+	if godHealthConn then
+		godHealthConn:Disconnect()
+		godHealthConn = nil
+	end
+
+	if godRenderConn then
+		godRenderConn:Disconnect()
+		godRenderConn = nil
+	end
+end
+
+local function applyGodHumanoid(hum)
+	if not hum then return end
+
+	clearGodConnections()
+
+	godOriginalMax = hum.MaxHealth
+	hum.MaxHealth = 1000000
+	hum.Health = 1000000
+	hum.BreakJointsOnDeath = false
+
+	godHealthConn = hum.HealthChanged:Connect(function()
+		if godEnabled and hum.Parent and hum.Health < 1000000 then
+			hum.Health = 1000000
 		end
 	end)
 end
 
-local function healthDeactivate()
-	healthActive = false
-
-	if healthConnection then
-		healthConnection:Disconnect()
-		healthConnection = nil
-	end
+local function godActivate()
+	if godEnabled then return end
+	godEnabled = true
 
 	local char = player.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	applyGodHumanoid(hum)
 
-	if hum and originalHealth then
-		hum.MaxHealth = originalHealth
-		hum.Health = math.min(hum.Health, originalHealth)
-	end
+	godThread = task.spawn(function()
+		while godEnabled do
+			pcall(function()
+				Solo:FireServer("Health")
+			end)
+			task.wait(0.01)
+		end
+	end)
 
-	originalHealth = nil
+	godRenderConn = RunService.Heartbeat:Connect(function()
+		local h = player.Character
+			and player.Character:FindFirstChildOfClass("Humanoid")
+
+		if h then
+			if h.MaxHealth ~= 1000000 then
+				h.MaxHealth = 1000000
+			end
+
+			if h.Health ~= 1000000 then
+				h.Health = 1000000
+			end
+
+			h.BreakJointsOnDeath = false
+		end
+	end)
 end
 
-local fHealth = makeFeature("Health Boost", Enum.KeyCode.Unknown, {
-	onActivate = healthActivate,
-	onDeactivate = healthDeactivate
+local function godDeactivate()
+	godEnabled = false
+	clearGodConnections()
+
+	if godThread then
+		task.cancel(godThread)
+		godThread = nil
+	end
+
+	local hum = player.Character
+		and player.Character:FindFirstChildOfClass("Humanoid")
+
+	if hum and godOriginalMax then
+		hum.MaxHealth = godOriginalMax
+		hum.Health = math.min(hum.Health, godOriginalMax)
+		hum.BreakJointsOnDeath = true
+	end
+end
+
+player.CharacterAdded:Connect(function(char)
+	if not godEnabled then return end
+
+	local hum = char:WaitForChild("Humanoid", 10)
+	if hum then
+		applyGodHumanoid(hum)
+	end
+end)
+
+local fHeal = makeFeature("Heal Boost", Enum.KeyCode.Unknown, {
+	onActivate = healActivate,
+	onDeactivate = healDeactivate
+})
+
+local fGod = makeFeature("God Mode", Enum.KeyCode.Unknown, {
+	onActivate = godActivate,
+	onDeactivate = godDeactivate
 })
 
 local fEscape=makeFeature("Auto Escape",Enum.KeyCode.Unknown,{
@@ -819,14 +897,13 @@ end
 
 local function buildSneakPanel()
 	local ssg=Instance.new("ScreenGui"); ssg.Name="STUNNA_SNEAK"; ssg.ResetOnSpawn=false
-	ssg.IgnoreGuiInset=true; ssg.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+	ssg.IgnoreGuiInset=false; ssg.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
 	ssg.Enabled=false; ssg.Parent=playerGui
-
-
+	ssg.DisplayOrder = 100
 
 	local sp=Instance.new("Frame")
-	sp.Size=UDim2.new(0,245,0.7,0)
-	sp.Position=UDim2.new(0,8,0.15,0)
+	sp.Size = UDim2.new(0, 240, 0, 300)
+	sp.Position = UDim2.new(0.5, -120, 0.5, -150)
 	sp.BackgroundColor3=C_BG
 	sp.BorderSizePixel=0
 	sp.Active=true
@@ -897,6 +974,7 @@ local function buildSneakPanel()
 	ss2.ScrollBarImageColor3=Color3.fromRGB(185,190,200)
 	ss2.CanvasSize=UDim2.new(0,0,0,0)
 	ss2.Parent=sp
+	ss2.ZIndex = 4
 
 	local sl=Instance.new("UIListLayout")
 	sl.SortOrder=Enum.SortOrder.Name
@@ -919,8 +997,10 @@ local function buildSneakPanel()
 		row.TextSize=12
 		row.Font=Enum.Font.GothamBold
 		row.TextXAlignment=Enum.TextXAlignment.Left
-		row.Name=other.Name
-		row.Parent=ss2
+		row.Name = other.Name
+		row.Active = true
+		row.ZIndex = 5
+		row.Parent = ss2
 		Instance.new("UICorner",row).CornerRadius=UDim.new(0,10)
 
 
@@ -928,12 +1008,25 @@ local function buildSneakPanel()
 		row.MouseEnter:Connect(function() TweenService:Create(row,TW_ROW,{BackgroundColor3=Color3.fromRGB(120,32,70)}):Play() end)
 		row.MouseLeave:Connect(function() TweenService:Create(row,TW_ROW,{BackgroundColor3=Color3.fromRGB(74,20,44)}):Play() end)
 		row.MouseButton1Click:Connect(function()
-			if not SendSneak then statusLbl.Text="❌ Remote not found"; statusLbl.TextColor3=C_OFF; return end
-			local ok,err=pcall(function() SendSneak:FireServer(other) end)
-			if ok then statusLbl.Text="✓ Sneaked "..other.DisplayName; statusLbl.TextColor3=C_ON
-			else statusLbl.Text="❌ "..tostring(err):sub(1,35); statusLbl.TextColor3=C_OFF end
-			TweenService:Create(row,TW_ROW,{BackgroundColor3=Color3.fromRGB(140,30,80)}):Play()
-			task.delay(0.8,function() TweenService:Create(row,TW_ROW,{BackgroundColor3=Color3.fromRGB(74,20,44)}):Play() end)
+			if not SendSneak then
+				statusLbl.Text = "Remote not found"
+				statusLbl.TextColor3 = C_OFF
+				return
+			end
+
+			statusLbl.Text = "Sending request..."
+			statusLbl.TextColor3 = C_ON
+
+			local ok, err = pcall(function()
+				SendSneak:FireServer(other)
+			end)
+
+			if ok then
+				statusLbl.Text = "Request sent: " .. other.DisplayName
+			else
+				statusLbl.Text = tostring(err):sub(1, 40)
+				statusLbl.TextColor3 = C_OFF
+			end
 		end)
 		pRows2[other]=row
 	end
